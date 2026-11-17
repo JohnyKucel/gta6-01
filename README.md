@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/gta6-01/JohnyKucel/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/JohnyKucel/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-Porto Sol is an original 2D top-down open-world crime game built for the make.fun "Make GTA 6" bounty ($1,666 in USDC). It drops you into a sunlit fictional port city where you can jack cars off the street, dodge patrols under a 0–5 star wanted level, and work through six story jobs — from a first borrowed car to a final vault hit — with fistfights, shootouts, a live minimap, a day/night cycle, and synthesized sound. Everything runs in plain JavaScript and Canvas 2D, fully offline, with no libraries and no network calls.
+Porto Sol is a 2D top-down open-world crime game built for the make.fun "Make GTA 6" bounty. You wake up in a fictional sunlit port city, steal a car off the street, dodge patrols under a 0–5 star wanted level, and work through six story jobs — from a first borrowed ride to a final vault heist — with fistfights, shootouts, a live minimap, a day/night cycle, and synthesized sound. It runs in plain JavaScript and Canvas 2D, fully offline, with no libraries and no network calls.
 
 ## Run it
 
