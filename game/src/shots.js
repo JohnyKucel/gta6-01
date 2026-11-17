@@ -1,50 +1,79 @@
-// The screenshot scenes behind ?shot=chase|street|night|start. Each one plays the real
-// rules forward from a fresh world for a fixed number of steps, steered by a simple
-// autopilot, so the frame is what a short game really looks like and the same seed always
-// gives the same frame. No Date.now, no Math.random — only the seeded stream.
+// The staged scenes behind ?shot=chase|street|night|start. Each scene replays the real
+// rules forward from a fresh world for a fixed number of seconds, steered by a small
+// autopilot, so the frame is a genuine slice of play — and the same seed always stages
+// the same frame. No Date.now, no Math.random; only the world's seeded stream.
 import { STEP, WORLD } from './config.js';
 import { EVENT_OVER } from './world.js';
 import { startMission } from './missions.js';
 import { SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
-const CHASE_SECONDS = 16;
-const STREET_SECONDS = 7;
-const NIGHT_SECONDS = 10;
-const START_SECONDS = 12;
+/** How long each scene plays before the frame is taken, in seconds. */
+const SCENE_LENGTH = { chase: 16, street: 7, night: 10, start: 12 };
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-function angleDiff(a, b) {
-  let d = b - a;
+/** Smallest signed turn from heading `from` to heading `to`, in (-PI, PI]. */
+function turnTo(from, to) {
+  let d = to - from;
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   return d;
 }
 
-/** A Manhattan route across the road grid, intersection by intersection, from the car's
- * nearest crossing to the target's. Pure arithmetic on the fixed grid, so the route is
- * deterministic; each step cuts the remaining distance, so it can never loop. */
+function noInput(aimX, aimY) {
+  return { mx: 0, my: 0, enter: false, punch: false, shoot: false, aimX, aimY };
+}
+
+/** Step the world for `seconds`, asking `inputFn` for each tick's bundle. Stops early
+ * if the game ends. `harmless` runs the backdrop with no crimes and no death. */
+function runFor(world, seconds, inputFn, harmless = false) {
+  const steps = Math.round(seconds / STEP);
+  for (let i = 0; i < steps; i += 1) {
+    if (world.step(STEP, inputFn(), harmless) & EVENT_OVER) break;
+    if (world.state.over) break;
+  }
+}
+
+/** Walk the player toward (tx, ty) on foot. */
+function walkToward(state, tx, ty) {
+  const dx = tx - state.player.x;
+  const dy = ty - state.player.y;
+  const d = Math.hypot(dx, dy) || 1;
+  return { mx: clamp(dx / d, -1, 1), my: clamp(dy / d, -1, 1), enter: false, punch: false, shoot: false, aimX: tx, aimY: ty };
+}
+
+/** The road line closest to a coordinate. */
+function closestRoad(roads, v) {
+  let best = roads[0];
+  for (const line of roads) {
+    if (Math.abs(line - v) < Math.abs(best - v)) best = line;
+  }
+  return best;
+}
+
+/** A Manhattan route across the grid: from the car's nearest crossing to the target's,
+ * one intersection at a time, always picking the step that leaves the least distance
+ * behind, so the route shortens every step and can never loop. */
 function planRoute(state, tx, ty) {
   const roads = state.city.roads;
-  const nearestRoad = (v) => roads.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
-  let cx = nearestRoad(state.player.car.x);
-  let cy = nearestRoad(state.player.car.y);
-  const gx = nearestRoad(tx);
-  const gy = nearestRoad(ty);
+  const gap = WORLD.roadGap;
+  let cx = closestRoad(roads, state.player.car.x);
+  let cy = closestRoad(roads, state.player.car.y);
+  const gx = closestRoad(roads, tx);
+  const gy = closestRoad(roads, ty);
   const pts = [{ x: cx, y: cy }];
   let guard = 0;
   while ((cx !== gx || cy !== gy) && guard < 40) {
     guard += 1;
-    const opts = [];
-    if (cx < gx) opts.push({ x: cx + WORLD.roadGap, y: cy });
-    if (cx > gx) opts.push({ x: cx - WORLD.roadGap, y: cy });
-    if (cy < gy) opts.push({ x: cx, y: cy + WORLD.roadGap });
-    if (cy > gy) opts.push({ x: cx, y: cy - WORLD.roadGap });
-    // The step that leaves the least distance behind; ties keep the current direction.
-    opts.sort((a, b) => (Math.abs(gx - a.x) + Math.abs(gy - a.y)) - (Math.abs(gx - b.x) + Math.abs(gy - b.y)));
-    const next = opts[0];
+    const moves = [];
+    if (cx < gx) moves.push({ x: cx + gap, y: cy });
+    if (cx > gx) moves.push({ x: cx - gap, y: cy });
+    if (cy < gy) moves.push({ x: cx, y: cy + gap });
+    if (cy > gy) moves.push({ x: cx, y: cy - gap });
+    moves.sort((a, b) => (Math.abs(gx - a.x) + Math.abs(gy - a.y)) - (Math.abs(gx - b.x) + Math.abs(gy - b.y)));
+    const next = moves[0];
     cx = next.x;
     cy = next.y;
     pts.push({ x: cx, y: cy });
@@ -53,13 +82,13 @@ function planRoute(state, tx, ty) {
   return pts;
 }
 
-/** Drive the player's car toward a point, following the road grid: the car walks a planned
- * route of intersections, braking early when a turn waits at the next crossing and turning
- * (almost) in place when the heading change is sharp. Exported so a playtest can steer
- * the same autopilot the screenshots use. */
+/** Drive the player's car toward a point, following the road grid: the car walks a
+ * planned route of intersections, braking early when a turn waits at the next crossing
+ * and turning (almost) in place when the heading change is sharp. Exported so a
+ * playtest can steer with the same autopilot the screenshots use. */
 export function driveInput(state, tx, ty) {
   const car = state.player.car;
-  const idle = { mx: 0, my: 0, enter: false, punch: false, shoot: false, aimX: tx, aimY: ty };
+  const idle = noInput(tx, ty);
   if (!car) return idle;
   if (!car._route || car._route.tx !== tx || car._route.ty !== ty) {
     car._route = { tx, ty, pts: planRoute(state, tx, ty), i: 0 };
@@ -67,7 +96,7 @@ export function driveInput(state, tx, ty) {
   const route = car._route;
   // Arrived: brake to a stop at the destination instead of orbiting the point.
   if (Math.hypot(tx - car.x, ty - car.y) < 80) {
-    return { mx: 0, my: Math.abs(car.speed) > 20 ? 0.6 : 0, enter: false, punch: false, shoot: false, aimX: tx, aimY: ty };
+    return { ...idle, my: Math.abs(car.speed) > 20 ? 0.6 : 0 };
   }
   // Advance only once the car is really at the crossing: advancing early makes it cut
   // the corner through the block instead of turning on the road.
@@ -77,38 +106,33 @@ export function driveInput(state, tx, ty) {
   const wp = route.pts[Math.min(route.i, route.pts.length - 1)];
   const next = route.pts[Math.min(route.i + 1, route.pts.length - 1)];
   const want = Math.atan2(wp.y - car.y, wp.x - car.x);
-  const diff = angleDiff(car.angle, want);
+  const diff = turnTo(car.angle, want);
   const steer = clamp(diff * 2.2, -1, 1);
   const distWp = Math.hypot(wp.x - car.x, wp.y - car.y);
-  const turnAhead = Math.abs(angleDiff(want, Math.atan2(next.y - wp.y, next.x - wp.x))) > 0.5;
-  let my = -1; // full throttle
+  const turnAhead = Math.abs(turnTo(want, Math.atan2(next.y - wp.y, next.x - wp.x))) > 0.5;
+  let throttle = -1; // full speed ahead
   if (Math.abs(diff) > 1.2 || Math.abs(diff) > 0.5) {
     // Sharp heading change: brake if moving, coast if slow, creep if stopped.
-    my = Math.abs(car.speed) > 60 ? 0.6 : Math.abs(car.speed) > 5 ? 0 : -0.15;
+    throttle = Math.abs(car.speed) > 60 ? 0.6 : Math.abs(car.speed) > 5 ? 0 : -0.15;
   } else if (turnAhead && distWp < 200 && Math.abs(car.speed) > 140) {
-    my = 0.6; // a turn waits at this crossing: slow down before it, not in it
+    throttle = 0.6; // a turn waits at this crossing: slow down before it, not in it
   } else if (Math.abs(car.speed) > 480) {
-    my = 0; // don't outrun the brakes
+    throttle = 0; // don't outrun the brakes
   }
-  return { mx: steer, my, enter: false, punch: false, shoot: false, aimX: tx, aimY: ty };
+  return { ...idle, mx: steer, my: throttle };
 }
 
-/** Walk toward a point. */
-function walkInput(state, tx, ty) {
-  const p = state.player;
-  const dx = tx - p.x;
-  const dy = ty - p.y;
-  const d = Math.hypot(dx, dy) || 1;
-  return { mx: clamp(dx / d, -1, 1), my: clamp(dy / d, -1, 1), enter: false, punch: false, shoot: false, aimX: tx, aimY: ty };
-}
-
+/** Put the player in the nearest civilian car, parked at (x, y), facing south. */
 function putPlayerInCar(state, x, y) {
   let car = null;
   let bestD = 1e9;
   for (const c of state.cars) {
     if (c.kind === 'police') continue;
     const d = Math.hypot(c.x - x, c.y - y);
-    if (d < bestD) { bestD = d; car = c; }
+    if (d < bestD) {
+      bestD = d;
+      car = c;
+    }
   }
   if (!car) return;
   car.parked = false;
@@ -126,6 +150,7 @@ function putPlayerInCar(state, x, y) {
   state.camera.y = y;
 }
 
+/** Drop a siren-blaring cruiser into the world, already pointed at the player. */
 function addPoliceCar(state, x, y) {
   state.cars.push({
     id: state.cars.length, kind: 'police', x, y,
@@ -133,6 +158,20 @@ function addPoliceCar(state, x, y) {
     color: '#20242e', axis: 'v', road: 0, s: 0, dir: 1, lane: 0,
     parked: false, driver: true, siren: true, crashCooldown: 0,
   });
+}
+
+/** The nearest living threat (thug or cop on foot) to the player, if any. */
+function nearestThreat(state) {
+  let nearest = null;
+  let nearestD = 1e9;
+  for (const t of [...state.thugs, ...state.cops]) {
+    const d = Math.hypot(t.x - state.player.x, t.y - state.player.y);
+    if (d < nearestD) {
+      nearestD = d;
+      nearest = t;
+    }
+  }
+  return nearest;
 }
 
 /**
@@ -145,7 +184,6 @@ function addPoliceCar(state, x, y) {
 export function stageShot(name, world) {
   world.reset();
   const state = world.state;
-  const idle = { mx: 0, my: 0, enter: false, punch: false, shoot: false, aimX: 0, aimY: 0 };
 
   if (name === 'chase') {
     putPlayerInCar(state, 800, 800);
@@ -156,10 +194,7 @@ export function stageShot(name, world) {
     addPoliceCar(state, 620, 980);
     startMission(state, 2);
     state.mission.timer = 62;
-    for (let i = 0; i < CHASE_SECONDS / STEP; i += 1) {
-      world.step(STEP, driveInput(state, 1920, 1900), false);
-      if (state.over) break;
-    }
+    runFor(world, SCENE_LENGTH.chase, () => driveInput(state, 1920, 1900));
     // Ramming traffic on the way raises the heat; pin the frame back to three stars.
     state.wanted.points = 45;
     state.wanted.level = 3;
@@ -173,13 +208,14 @@ export function stageShot(name, world) {
     state.camera.y = 900;
     // A parked car a short walk away, the mission's first temptation.
     const car = state.cars.find((c) => c.parked);
-    if (car) { car.x = 1240; car.y = 900; }
-    for (let i = 0; i < STREET_SECONDS / STEP; i += 1) {
-      const d = Math.hypot(1240 - state.player.x, 900 - state.player.y);
-      const input = d < 70 ? { ...idle, aimX: 1240, aimY: 900 } : walkInput(state, 1240, 900);
-      world.step(STEP, input, false);
-      if (state.over) break;
+    if (car) {
+      car.x = 1240;
+      car.y = 900;
     }
+    runFor(world, SCENE_LENGTH.street, () => {
+      const d = Math.hypot(1240 - state.player.x, 900 - state.player.y);
+      return d < 70 ? noInput(1240, 900) : walkToward(state, 1240, 900);
+    });
     return { screen: SCREEN_PLAY, best: state.player.money };
   }
 
@@ -197,27 +233,17 @@ export function stageShot(name, world) {
     // A police roadblock across the street ahead.
     addPoliceCar(state, 1020, 860);
     addPoliceCar(state, 1020, 960);
-    for (let i = 0; i < NIGHT_SECONDS / STEP; i += 1) {
-      let aim = { x: 1020, y: 900 };
-      let nearest = null;
-      let nearestD = 1e9;
-      for (const t of state.thugs) {
-        const d = Math.hypot(t.x - state.player.x, t.y - state.player.y);
-        if (d < nearestD) { nearestD = d; nearest = t; }
-      }
-      for (const c of state.cops) {
-        const d = Math.hypot(c.x - state.player.x, c.y - state.player.y);
-        if (d < nearestD) { nearestD = d; nearest = c; }
-      }
-      if (nearest) aim = { x: nearest.x, y: nearest.y };
+    runFor(world, SCENE_LENGTH.night, () => {
+      const threat = nearestThreat(state);
+      const aim = threat ? { x: threat.x, y: threat.y } : { x: 1020, y: 900 };
       // Hold a firing position southwest of the crew instead of walking into them.
       const d = Math.hypot(820 - state.player.x, 1060 - state.player.y);
-      const input = d < 40 ? { ...idle, aimX: aim.x, aimY: aim.y } : walkInput(state, 820, 1060);
+      const input = d < 40 ? noInput(aim.x, aim.y) : walkToward(state, 820, 1060);
       input.shoot = true;
       input.aimX = aim.x;
       input.aimY = aim.y;
-      if (world.step(STEP, input, false) & EVENT_OVER) break;
-    }
+      return input;
+    });
     // The shootout raises the heat past three stars; pin the frame back to the scene.
     state.wanted.points = 45;
     state.wanted.level = 3;
@@ -225,9 +251,7 @@ export function stageShot(name, world) {
   }
 
   // start (and any unknown name): the title screen over a living city.
-  for (let i = 0; i < START_SECONDS / STEP; i += 1) {
-    world.step(STEP, idle, true);
-  }
+  runFor(world, SCENE_LENGTH.start, () => noInput(0, 0), true);
   state.camera.x = 1100;
   state.camera.y = 850;
   return { screen: SCREEN_TITLE, best: 0 };
